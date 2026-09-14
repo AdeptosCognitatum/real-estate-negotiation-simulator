@@ -107,16 +107,16 @@ def mcp_tools_to_openai_functions(mcp_tools: list) -> list[dict]:
     """
     Convert MCP tool schemas into OpenAI function-calling format.
 
-    MCP tools describe themselves with JSON Schema (inputSchema).
+    MCP tools describe themselves with JSON Schema (input_schema).
     OpenAI expects the same schemas under a slightly different wrapper.
     This bridge lets the LLM see MCP tools as callable functions.
     """
     functions = []
     for tool in mcp_tools:
         input_schema = (
-            tool.inputSchema.model_dump()
-            if hasattr(tool.inputSchema, "model_dump")
-            else tool.inputSchema
+            tool.input_schema.model_dump()
+            if hasattr(tool.input_schema, "model_dump")
+            else tool.input_schema
         )
         # Ensure it's a valid object schema for OpenAI
         if not isinstance(input_schema, dict):
