@@ -96,9 +96,9 @@ def mcp_tools_to_openai_functions(mcp_tools: list) -> list[dict]:
     functions = []
     for tool in mcp_tools:
         input_schema = (
-            tool.inputSchema.model_dump()
-            if hasattr(tool.inputSchema, "model_dump")
-            else tool.inputSchema
+            tool.input_schema.model_dump()
+            if hasattr(tool.input_schema, "model_dump")
+            else tool.input_schema
         )
         if not isinstance(input_schema, dict):
             input_schema = {"type": "object", "properties": {}}

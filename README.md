@@ -185,10 +185,219 @@ GITHUB_TOKEN=ghp-your-token-here   # Optional — Module 1 GitHub demo only
 
 ```bash
 # Smoke test — run the MCP pricing server standalone
+python m1_mcp/pricing_server.py --check
+```
+If it runs cleanly, your Python environment is ready.
+
+#### 7.1 Interact with MCP pricing server over `STDIO`:
+
+Refer to:
+- [https://py.sdk.modelcontextprotocol.io/client/transports/](https://py.sdk.modelcontextprotocol.io/client/transports/)
+- [https://tasks.extensions.modelcontextprotocol.io/specification/draft/tasks](https://tasks.extensions.modelcontextprotocol.io/specification/draft/tasks)
+
+We'll do a basic flow of:
+```
+Server starts
+     │
+     ▼
+NOT INITIALIZED
+     │
+     │ initialize              ← Step 1
+     ▼
+INITIALIZING
+     │
+     │ notifications/initialized ← Step 3
+     ▼
+   READY
+     │
+     │ tools/list              ← Step 4
+     ▼
+  🛠️ Tool Calls ...
+```
+
+Launch in interactive mode over STDIO:
+```bash
 python m1_mcp/pricing_server.py
 ```
 
-If it runs cleanly, your Python environment is ready.
+Then step by step:
+1. Enter this into **`stdin`** to initialize handshake:
+  - `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual-smoke-test","version":"1.0"}}}`
+  - You should receive a reply like:
+      - `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{},"prompts":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false},"tools":{"listChanged":false}},"serverInfo":{"name":"real-estate-pricing","version":"1.30.0"}}}`
+2. Finish the handshake, sending:
+  - `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+  - Expect **no** response.
+3. Ask for the list of tools:
+  - `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
+  - Expect a response like:
+      - `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_market_price","description":"\nGet comprehensive market pricing data for a property.\n\nReturns comparable recent sales, estimated market value, price per sqft,\nand market analysis to help agents understand fair market value.\n\nMCP NOTE: This tool abstracts the complexity of querying real estate\ndatabases. Agents call this tool without knowing whether data comes\nfrom Zillow, Redfin, MLS, or a local database.\n\nArgs:\n    address: Full property address (e.g., \"742 Evergreen Terrace, Austin, TX 78701\")\n    property_type: Type of property — single_family, condo, townhouse, multi_family\n\nReturns:\n    Comprehensive pricing data including comparables, market analysis,\n    and negotiation context.\n","inputSchema":{"properties":{"address":{"title":"Address","type":"string"},"property_type":{"default":"single_family","title":"Property Type","type":"string"}},"required":["address"],"title":"get_market_priceArguments","type":"object"}},{"name":"calculate_discount","description":"\nCalculate appropriate discount range based on market conditions.\n\nProvides data-driven discount recommendations that agents can use\nto formulate and justify their negotiation positions.\n\nMCP NOTE: This tool encapsulates pricing business logic that would\notherwise be duplicated across agents. By exposing it as an MCP tool,\nboth the buyer (to determine offer) and seller (to anticipate buyer\nstrategy) can use the same logic from the same source.\n\nArgs:\n    base_price: The listing price to calculate discount from\n    market_condition: Market heat — \"hot\" (seller's market), \"balanced\", or \"cold\" (buyer's market)\n    days_on_market: Days the property has been listed (longer = more negotiable)\n    property_condition: Physical condition of the property\n\nReturns:\n    Discount analysis with suggested offer ranges and negotiation tips.\n","inputSchema":{"properties":{"base_price":{"title":"Base Price","type":"number"},"market_condition":{"default":"balanced","enum":["hot","balanced","cold"],"title":"Market Condition","type":"string"},"days_on_market":{"default":0,"title":"Days On Market","type":"integer"},"property_condition":{"default":"good","enum":["excellent","good","fair","poor"],"title":"Property Condition","type":"string"}},"required":["base_price"],"title":"calculate_discountArguments","type":"object"}}]}}`
+4. Call the simplest tool, **`get_market_price`**.  The schema of `"arguments"` comes from the function, which the FastMCP SDK framework introspected to derive, and which it advertised to us through `tools/list`:
+  - `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_market_price","arguments":{"address":"123 Main St, Austin, TX"}}}`
+  - Expect back something like:
+      - `{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\n  \"address\": \"123 Main St, Austin, TX\",\n  \"property_details\": {\n    \"type\": \"single_family\",\n    \"bedrooms\": 4,\n    \"bathrooms\": 4,\n    \"sqft\": 2051,\n    \"lot_sqft\": 8550,\n    \"year_built\": 2012,\n    \"school_district_rating\": 9,\n    \"hoa_monthly\": 0,\n    \"annual_property_tax\": 8570,\n    \"recent_upgrades\": []\n  },\n  \"pricing\": {\n    \"list_price\": 428515,\n    \"estimated_market_value\": 409578,\n    \"price_per_sqft\": 208,\n    \"days_on_market\": 51\n  },\n  \"comparable_sales\": [\n    {\n      \"address\": \"Similar Property A, Austin, TX\",\n      \"price\": 429776,\n      \"sqft\": 2183,\n      \"price_per_sqft\": 199,\n      \"days_ago\": 54,\n      \"bed_bath\": \"4/3\"\n    },\n    {\n      \"address\": \"Similar Property B, Austin, TX\",\n      \"price\": 403492,\n      \"sqft\": 2098,\n      \"price_per_sqft\": 199,\n      \"days_ago\": 52,\n      \"bed_bath\": \"4/3\"\n    },\n    {\n      \"address\": \"Similar Property C, Austin, TX\",\n      \"price\": 417390,\n      \"sqft\": 1901,\n      \"price_per_sqft\": 199,\n      \"days_ago\": 55,\n      \"bed_bath\": \"4/3\"\n    },\n    {\n      \"address\": \"Similar Property D, Austin, TX\",\n      \"price\": 404330,\n      \"sqft\": 1982,\n      \"price_per_sqft\": 199,\n      \"days_ago\": 52,\n      \"bed_bath\": \"4/3\"\n    }\n  ],\n  \"market_statistics\": {\n    \"avg_comparable_price\": 413747,\n    \"median_comparable_price\": 417390,\n    \"price_vs_comps_pct\": 3.6,\n    \"is_overpriced\": true,\n    \"valuation_summary\": \"Property is listed above comparable sales by 3.6%\"\n  },\n  \"market_conditions\": {\n    \"zip_code\": \"78701\",\n    \"market_type\": \"balanced\",\n    \"inventory_months_supply\": 3.2,\n    \"yoy_appreciation_pct\": 4.1,\n    \"median_days_on_market\": 22,\n    \"typical_list_to_sale_ratio\": 0.97\n  },\n  \"negotiation_context\": {\n    \"fair_market_value_range\": {\n      \"low\": 401334,\n      \"high\": 426159\n    },\n    \"buyer_recommendation\": \"Fair offer range: $401,334 – $426,159. Property is overpriced relative to recent sales.\"\n  },\n  \"data_source\": \"MCP Pricing Server (simulated MLS/Zillow data)\"\n}"}],"isError":false}}`
+
+#### 7.2 Wrap the interaction with `jq` for human-readable inputs and outputs:
+
+Use JSON utility, **`jq`** (like *`sed`* for JSON), with arguments:
+- `--unbuffered` : No buffering, interactive, with no need for `EOF` to indicate input is complete (and which would also mean there'll be no more input on this stream, which is **not** what we want).
+- `-c` : Compact output.  Collapse multi-line JSON *inputs* into a single line.
+- `.` : Simplest filter, copying the input to the output unchanged except for formatting.
+
+We wire it into `pricing_server.py` like this:
+```
+                 ┌───────────────┐
+                 │   TERMINAL    │
+                 └───┬───────▲───┘
+                     │       │
+          multiline  │       │ pretty
+              JSON   │       │ JSON
+                     ▼       │
+                 [ jq ]  [ jq ]
+                     │       ▲
+          compact    │       │ compact
+          JSON line  │       │ JSON line
+                     ▼       │
+                 ┌───────────────┐
+                 │ pricing_server│
+                 │               │
+                 │ stdin   stdout│
+                 └───────────────┘
+```
+
+💡 ***Launch like this***: ⚡️
+```bash
+jq --unbuffered -c . | python m1_mcp/pricing_server.py | jq --unbuffered .
+```
+
+Then the sequence from [7.1](#71-interact-with-mcp-pricing-server-over-stdio) becomes:
+
+Send Initialize:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "manual-smoke-test",
+      "version": "1.0"
+    }
+  }
+}
+```
+Response:
+> ```json
+> {
+>   "jsonrpc": "2.0",
+>   "id": 1,
+>   "result": {
+>     "protocolVersion": "2025-06-18",
+>     "capabilities": {
+>       "experimental": {},
+>       "prompts": {
+>         "listChanged": false
+>       },
+>       "resources": {
+>         "subscribe": false,
+>         "listChanged": false
+>       },
+>       "tools": {
+>         "listChanged": false
+>       }
+>     },
+>     "serverInfo": {
+>       "name": "real-estate-pricing",
+>       "version": "1.30.0"
+>     }
+>   }
+> }
+> ```
+
+Finish handshake:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+```
+**No** reply is expected.
+
+Ask for tools:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list"
+}
+```
+You should see:
+> ```json
+> Processing request of type ListToolsRequest
+> {
+>   "jsonrpc": "2.0",
+>   "id": 2,
+>   "result": {
+>     "tools": [
+>       {
+>         "name": "get_market_price",
+>         "description": "\nGet comprehensive market pricing data [...]",
+>         "inputSchema": {
+>           "properties": {
+>             "address": {
+>               "title": "Address",
+>               "type": "string"
+>             },
+>             "property_type": {
+>               "default": "single_family",
+>               "title": "Property Type",
+>               "type": "string"
+>             }
+>           },
+>           "required": [
+>             "address"
+>           ],
+>           "title": "get_market_priceArguments",
+>           "type": "object"
+>         }
+>       },
+>       [...]
+> ```
+
+Make tool call to invoke **`get_market_price`** tool:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "get_market_price",
+    "arguments": {
+      "address": "123 Main St, Austin, TX"
+    }
+  }
+}
+```
+You'll get back something like:
+> ```json
+> Processing request of type CallToolRequest
+> {
+>   "jsonrpc": "2.0",
+>   "id": 3,
+>   "result": {
+>     "content": [
+>       {
+>         "type": "text",
+>         "text": "{\n  \"address\": [...]",
+>       }
+>     ],
+>     "isError": false
+>   }
+> }
+> ```
+
 
 ### 8. Run the Workshop Modules in Order
 

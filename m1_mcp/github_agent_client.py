@@ -45,6 +45,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+import mcp
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -103,33 +104,36 @@ SAMPLE_QUERIES = [
 
 # ─── MCP Tool Schema -> OpenAI Function Schema ───────────────────────────────
 
-def mcp_tools_to_openai_functions(mcp_tools: list) -> list[dict]:
+def mcp_tools_to_openai_functions(mcp_tools: list[mcp.types.Tool]) -> list[dict]:
     """
     Convert MCP tool schemas into OpenAI function-calling format.
 
-    MCP tools describe themselves with JSON Schema (input_schema).
+    MCP tools describe themselves with JSON Schema (inputSchema).
     OpenAI expects the same schemas under a slightly different wrapper.
     This bridge lets the LLM see MCP tools as callable functions.
     """
     functions = []
     for tool in mcp_tools:
-        input_schema = (
-            tool.input_schema.model_dump()
-            if hasattr(tool.input_schema, "model_dump")
-            else tool.input_schema
+        # Each `tool` in `mcp_tools` is a Pydantic model representing one MCP Tool Definition.
+        # 👉🏻 Note that in mcp package version >2, the `inputSchema` attribute name changes to `input_schema`.
+        #    For now, since we're pinned to mcp<2, it is still named `inputSchema`.
+        inputSchema = (
+            tool.inputSchema.model_dump()
+            if hasattr(tool.inputSchema, "model_dump")
+            else tool.inputSchema
         )
         # Ensure it's a valid object schema for OpenAI
-        if not isinstance(input_schema, dict):
-            input_schema = {"type": "object", "properties": {}}
-        if "type" not in input_schema:
-            input_schema["type"] = "object"
+        if not isinstance(inputSchema, dict):
+            inputSchema = {"type": "object", "properties": {}}
+        if "type" not in inputSchema:
+            inputSchema["type"] = "object"
 
         functions.append({
             "type": "function",
             "function": {
                 "name": tool.name,
                 "description": (tool.description or "")[:1024],
-                "parameters": input_schema,
+                "parameters": inputSchema,
             },
         })
     return functions
