@@ -49,7 +49,11 @@ HOW AGENTS USE THIS:
 import argparse
 import random
 import sys
+import re
 from typing import Literal
+
+from faker import Faker
+fake = Faker()
 
 # FastMCP is the Pythonic way to build MCP servers
 # Install: pip install mcp
@@ -135,6 +139,11 @@ MARKET_DATA: dict[str, dict] = {
         "yoy_appreciation_pct": 4.1,
         "median_days_on_market": 22,
         "list_to_sale_ratio": 0.97,  # homes sell for 97% of list
+
+        "walk_score": 82,
+        "transit_score": 47,
+        "bike_score": 71,
+        "walk_category": "Very Walkable"
     },
     "78702": {
         "condition": "hot",
@@ -142,6 +151,11 @@ MARKET_DATA: dict[str, dict] = {
         "yoy_appreciation_pct": 8.3,
         "median_days_on_market": 9,
         "list_to_sale_ratio": 1.02,  # over asking in hot market
+
+        "walk_score": 65,
+        "transit_score": 30,
+        "bike_score": 50,
+        "walk_category": "Somewhat Walkable"
     },
     "78703": {
         "condition": "cold",
@@ -149,6 +163,11 @@ MARKET_DATA: dict[str, dict] = {
         "yoy_appreciation_pct": 1.2,
         "median_days_on_market": 45,
         "list_to_sale_ratio": 0.94,
+        
+        "walk_score": 50,
+        "transit_score": 20,
+        "bike_score": 40,
+        "walk_category": "Not Walkable"
     },
     "default": {
         "condition": "balanced",
@@ -156,6 +175,11 @@ MARKET_DATA: dict[str, dict] = {
         "yoy_appreciation_pct": 3.5,
         "median_days_on_market": 25,
         "list_to_sale_ratio": 0.96,
+
+        "walk_score": 60,
+        "transit_score": 25,
+        "bike_score": 55,
+        "walk_category": "Somewhat Walkable"
     }
 }
 
@@ -299,6 +323,45 @@ def get_market_price(
         "data_source": "MCP Pricing Server (simulated MLS/Zillow data)",
     }
 
+@mcp.tool()
+def get_walk_score(zip_code: str) -> dict:
+    """Get walkability, transit, and bike scores for a US ZIP code (0-100 scale)."""
+    def walk_score_to_category(walk_score: int) -> str:
+        if walk_score >= 80:
+            return "Very Walkable"
+        elif walk_score >= 60:
+            return "Walkable"
+        else:
+            return "Not Walkable"
+
+    normalized = zip_code.strip()
+    if not re.match(r'^\d{5}(-\d{4})?$', normalized):
+        zip_code_invalid = True
+    else:
+        zip_code_invalid = False
+
+    if zip_code_invalid or normalized not in MARKET_DATA:
+        # Fallback path for unknown properties
+        # Synthesize plausible values using faker
+        fake_zipcode = fake.zip_code() if zip_code_invalid else normalized
+        walk_score = fake.random_int(min=0, max=100)
+        return {
+            "zip_code": fake_zipcode,
+            "walk_score": walk_score,
+            "transit_score": fake.random_int(min=0, max=100),
+            "bike_score": fake.random_int(min=0, max=100), 
+            "walk_category": walk_score_to_category(walk_score),
+            "summary": "Up-to-date walk score data not available for this ZIP code.",
+        }
+    
+    return {
+        "zip_code": normalized,
+        "walk_score": MARKET_DATA[normalized]["walk_score"],
+        "transit_score": MARKET_DATA[normalized]["transit_score"],
+        "bike_score": MARKET_DATA[normalized]["bike_score"],
+        "walk_category": walk_score_to_category(MARKET_DATA[normalized]["walk_score"]),
+        "summary": "Most errands can be accomplished on foot.",
+    }
 
 @mcp.tool()
 def calculate_discount(
