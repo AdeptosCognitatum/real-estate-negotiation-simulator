@@ -50,8 +50,8 @@ Requirements:
 8. To test the stalled scenario:
    - Stop `adk web` (Ctrl+C).
    - Set the environment variable to drop the buyer's budget below the seller's floor:
-     ```powershell
-     $env:STALL_DEMO = "true"
+     ```bash
+     export STALL_DEMO=true
      ```
    - Restart:
      ```bash

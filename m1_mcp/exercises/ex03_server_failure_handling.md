@@ -110,8 +110,8 @@ This simulates a tool that connects successfully but crashes mid-execution — t
 
 1. Stop `adk web` (Ctrl+C).
 2. Set the environment variable to enable crash mode:
-   ```powershell
-   $env:CRASH_ZONING = "true"
+   ```bash
+   export CRASH_ZONING="true"
    ```
 3. Restart:
    ```bash
@@ -123,8 +123,8 @@ This simulates a tool that connects successfully but crashes mid-execution — t
    - Expected in **UI**: Agent acknowledges it can't access zoning data and provides a general answer.
    - Agent **never crashes**.
 5. Unset the variable when done:
-   ```powershell
-   Remove-Item Env:CRASH_ZONING
+   ```bash
+   unset CRASH_ZONING
    ```
 
 ### Scenario 4: Startup failure → tools silently disappear
