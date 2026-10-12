@@ -39,6 +39,7 @@ You need both agents running first. In a separate terminal:
 ```bash
 adk web --a2a m2_adk_multiagents/negotiation_agents/
 ```
+- Note: There is **no** need to actually open a browser at `http://127.0.0.1:8000/` and "trigger" the buyer&seller agents.  They will automatically be spun up and running as soon as you run `adk web ...`.
 
 Then run your script:
 

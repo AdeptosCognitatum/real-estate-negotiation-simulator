@@ -31,6 +31,8 @@ import uuid
 import httpx
 from a2a.client import A2ACardResolver
 
+# Filter out the warnings
+import warnings
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_MAX_ROUNDS = 5
@@ -169,9 +171,24 @@ async def run_negotiation(base_url: str, max_rounds: int) -> None:
                     "Austin TX 78701 (listed at $485,000)."
                 )
 
-            buyer_result, buyer_context_id = await send_a2a_message(
-                http, buyer_card["url"], buyer_prompt, buyer_context_id
-            )
+            # Suppress warnings about A2A package's exerimental mode functionality we're using here:
+            with warnings.catch_warnings(record=True) as warn_records:
+                # warnings.simplefilter("ignore", UserWarning)
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"\[EXPERIMENTAL\].*A2A support",
+                    category=UserWarning,
+                    module=r"google\.adk\.a2a\..*",
+                )
+                buyer_result, buyer_context_id = await send_a2a_message(
+                    http, buyer_card["url"], buyer_prompt, buyer_context_id
+                )
+                # Demonstration of how we could print the list of warnings that were caught:
+                ''' # but we comment it out because we don't wanna see it:
+                for warning in warn_records:
+                    print(f"Warning: {warning.message}")
+                '''
+            # Original warning behavior restored here
             messages_sent += 1
             buyer_offer_text = extract_agent_text(buyer_result)
             print(f"\n→ BUYER (contextId={(buyer_context_id or '')[:8]}...):")
@@ -191,9 +208,18 @@ async def run_negotiation(base_url: str, max_rounds: int) -> None:
                 f"This is round {round_num}. Respond with ACCEPT or COUNTER."
             )
 
-            seller_result, seller_context_id = await send_a2a_message(
-                http, seller_card["url"], seller_prompt, seller_context_id
-            )
+            # Suppress warnings about A2A package's exerimental mode functionality we're using here:
+            with warnings.catch_warnings(record=True) as warn_records:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"\[EXPERIMENTAL\].*A2A support",
+                    category=UserWarning,
+                    module=r"google\.adk\.a2a\..*",
+                )
+                seller_result, seller_context_id = await send_a2a_message(
+                    http, seller_card["url"], seller_prompt, seller_context_id
+                )
+            # Original warning behavior restored here
             messages_sent += 1
             seller_response_text = extract_agent_text(seller_result)
             print(f"\n← SELLER (contextId={(seller_context_id or '')[:8]}...):")
