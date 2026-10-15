@@ -2,126 +2,121 @@
 
 ## Goal
 
-Add an `after_agent_callback` to the negotiation orchestrator that **pauses and requires human approval** before the seller can accept any deal above $455,000. This teaches the production pattern of *human-in-the-loop governance* — ensuring autonomous agents don't make high-stakes decisions without oversight.
+Require human approval before finalizing a proposed acceptance above $455,000.
+Use the ordinary `adk web` chat input, with Python controlling approval state.
+The buyer and seller remain LLM agents; the root orchestrator is a custom
+`BaseAgent`, so neither asking for approval nor interpreting the answer depends
+on an LLM following instructions.
 
-## Context
+## Workflow
 
-The current orchestrator has two exit conditions: seller calls `submit_decision(action='ACCEPT')` or `max_iterations` is reached. In both cases, the decision is **fully autonomous** — no human ever reviews it.
+```text
+START → reset negotiation state → LoopAgent
+                                  └─ SequentialAgent: buyer → seller
+                                     └─ after_agent_callback checks acceptance
+                                          ├─ ≤ $455,000: auto-approved
+                                          ├─ > $455,000 and ≤ $460,000: pending
+                                          └─ > $460,000 or invalid price: blocked
 
-For a $450K real estate deal, that's reckless. Production agent systems need governance checkpoints:
-
-- **Low-stakes decisions**: agent proceeds autonomously (counter-offers under $5K movement)
-- **High-stakes decisions**: agent pauses, presents its reasoning, waits for human approval
-- **Forbidden decisions**: callback blocks entirely (like the budget cap in Exercise 1)
-
-Your checkpoint falls in the middle tier: the agent *can* accept, but a human must confirm.
-
-## What you're building
-
-A modified negotiation orchestrator:
-
-```
-m2_adk_multiagents/solution/ex06_human_in_the_loop/
-└── negotiation/
-    ├── __init__.py
-    └── agent.py
+pending → root emits approval question → current invocation ends
+next chat message → root reads stored proposal
+                    ├─ APPROVE: record approval and finalize
+                    ├─ REJECT: record rejection and end negotiation
+                    └─ anything else: repeat question, keep proposal pending
 ```
 
-Requirements:
+The round's `after_agent_callback` runs once after both buyer and seller finish.
+Setting `actions.escalate = True` ends the enclosing loop. It does not request
+human input by itself and does not leave a Python call waiting for a response.
+The browser sends the reply as a new invocation in the same session.
 
-1. **After the seller responds**, inspect `state['seller_decision']`. If `action == "ACCEPT"`:
-   - If `price <= 455_000`: auto-approve. Print `[AUTO-APPROVED] Deal at $X — within auto-approval threshold.` and escalate (end loop).
-   - If `price > 455_000`: **pause for human approval**. Print the deal details and prompt:
-     ```
-     ╔══════════════════════════════════════════════════════╗
-     ║  HUMAN APPROVAL REQUIRED                            ║
-     ║  Seller wants to accept at $457,000                 ║
-     ║  This exceeds the auto-approval threshold ($455K)   ║
-     ╚══════════════════════════════════════════════════════╝
-     Approve this deal? [y/n]:
-     ```
-   - If the human types `y`: escalate (accept the deal). Print `[APPROVED] Human approved deal at $X.`
-   - If the human types `n`: **do NOT escalate**. Overwrite `state['seller_decision']` to `{"action": "COUNTER", "price": price}` and print `[REJECTED] Human rejected deal. Continuing negotiation.` The loop continues with another round.
+Rejection ends the negotiation in this exercise. It does **not** automatically
+continue another round. After a terminal outcome, send `START` to begin again.
+While approval is pending, `START` does not discard the proposal: approve or
+reject it first.
 
-2. **Counter-offers** (`action == "COUNTER"`) proceed without any checkpoint — same as before.
+## Implementation steps
 
-3. The `$455,000` threshold should be a module-level constant `AUTO_APPROVE_CEILING = 455_000` — easy to reconfigure.
+1. Keep `submit_decision` as the seller's structured proposal tool. Validate that
+   the action is ACCEPT/COUNTER and the price is a positive integer. Recording
+   ACCEPT is a proposal, not permission to finalize.
+2. Before each round, clear `seller_decision` so an omitted tool call cannot
+   accidentally reuse a previous decision.
+3. Attach `_check_agreement_with_approval` to the **SequentialAgent** round:
+   - COUNTER or no decision: allow the loop to continue.
+   - ACCEPT at or below `AUTO_APPROVE_CEILING`: record `auto_approved`, set
+     `deal_finalized=True`, and end the loop.
+   - ACCEPT above the threshold within `BUYER_BUDGET`: store the pending price
+     and threshold, record `pending`, and end the loop.
+   - Invalid or over-budget acceptance: record `blocked` and end the loop.
+4. Implement a custom `NegotiationAgent(BaseAgent)` as the root. Register the
+   loop in `sub_agents` and call its `run_async(ctx)` method explicitly.
+5. At the start of `_run_async_impl`, check for a pending proposal. Read only the
+   current user message (`ctx.user_content`). After whitespace trimming and
+   case normalization, accept exactly `APPROVE` or `REJECT`. Read the price from
+   session state, never from the approval message. Return after handling this
+   branch so buyer/seller agents cannot run while awaiting approval.
+6. When there is no pending proposal, recognize `START` (the solution also
+   accepts the demonstration phrases below). Reset negotiation state, run the
+   loop, and emit the resulting approval prompt or terminal outcome directly.
+7. Emit root state changes through `EventActions(state_delta=...)` so the ADK
+   Runner persists them. Use `Event` content for the visible chat messages.
+   Disable LLM transfers from the buyer and seller so the root controls routing.
 
-4. Use a **parent LlmAgent** that wraps the negotiation loop as an `AgentTool`. When the loop exits with a pending approval, the parent agent asks the user in the **chat UI** whether to approve or reject — no `input()` needed.
+See [the solution](../solution/ex06_human_in_the_loop/negotiation/agent.py),
+especially `NegotiationAgent._run_async_impl`, for the complete implementation.
+There is no `input()`, root `instruction`, or `AgentTool` approval wrapper.
 
-## Steps
+## Run
 
-1. Copy the orchestrator from `negotiation_agents/negotiation/agent.py`.
-2. Modify `_check_agreement` (or add a new callback) to implement the three-tier logic:
-   ```python
-   AUTO_APPROVE_CEILING = 455_000
+```bash
+adk web m2_adk_multiagents/solution/ex06_human_in_the_loop/
+```
 
-   def _check_agreement_with_approval(callback_context):
-       decision = callback_context.state.get("seller_decision")
-       if not isinstance(decision, dict) or decision.get("action") != "ACCEPT":
-           return None  # Not an acceptance — proceed normally
+Open `http://localhost:8000`, choose **negotiation**, and send:
+> **START**.
 
-       price = decision["price"]
-       if price <= AUTO_APPROVE_CEILING:
-           print(f"[AUTO-APPROVED] Deal at ${price:,}")
-           callback_context.actions.escalate = True
-           return None
+You can also say:
+> `Start the negotiation.`
 
-       # Human checkpoint
-       print(f"\n{'═'*54}")
-       print(f"  HUMAN APPROVAL REQUIRED")
-       print(f"  Seller wants to accept at ${price:,}")
-       print(f"  Auto-approval threshold: ${AUTO_APPROVE_CEILING:,}")
-       print(f"{'═'*54}")
-       answer = input("Approve this deal? [y/n]: ").strip().lower()
+> `Start the negotiation for 742 Evergreen Terrace.`
 
-       if answer == "y":
-           print(f"[APPROVED] Human approved deal at ${price:,}")
-           callback_context.actions.escalate = True
-       else:
-           print(f"[REJECTED] Human rejected. Continuing negotiation.")
-           callback_context.state["seller_decision"] = {
-               "action": "COUNTER",
-               "price": price,
-           }
-       return None
-   ```
-3. Wire the callback on the seller agent: `after_agent_callback=_check_agreement_with_approval`.
-4. Run:
-   ```bash
-   adk web m2_adk_multiagents/solution/ex06_human_in_the_loop/
-   ```
-5. Open `http://localhost:8000`, pick **`negotiation`** from the dropdown.
-6. Send: **"Start the negotiation for 742 Evergreen Terrace."**
-7. Watch the **chat UI**. The negotiation runs automatically (buyer ↔ seller). When the seller tries to accept:
+| Scenario | Expected behavior |
+|---|---|
+| Accepted price $452,000 or $455,000 | Auto-approved; no human question |
+| Accepted price $457,000 | Root asks for APPROVE or REJECT |
+| APPROVE while pending | Stored price approved; `deal_finalized=True` |
+| REJECT while pending | Rejected; `deal_finalized=False`; pending proposal cleared |
+| `yes` or `approve at $450,000` while pending | Question repeated; no state transition |
+| START while pending | Question repeated; no new negotiation |
+| Acceptance above $460,000 | Blocked, even if a human would approve |
+| Loop exhausts its five rounds | Reports no accepted deal |
+| APPROVE without a pending proposal | No effect; root explains how to start |
+| START after a terminal outcome | Fresh negotiation state |
 
-   | Scenario | What happens in the chat | What to do |
-   |---|---|---|
-   | Deal ≤ $455K | Agent reports: "Deal auto-approved at $X" | Nothing — auto-approved |
-   | Deal > $455K | Agent asks: "The seller wants to accept at $X. Do you APPROVE or REJECT?" | Reply **APPROVE** or **REJECT** in the chat |
-   | You reply REJECT | Agent confirms rejection | You can start a new negotiation |
-   | You reply APPROVE | Agent confirms: "Deal is closed at $X" | Done |
+Buyer and seller intermediate messages may appear in the web UI. Only the root's
+recorded outcome determines whether a proposal is finalized.
 
-8. Try both paths:
-   - **First run:** If you get the approval prompt, type **REJECT**. Confirm the deal is rejected.
-   - **Second run:** Start a new negotiation, type **APPROVE** when prompted. Confirm the deal closes.
+## Verify without model or MCP calls
 
-## Verify
+From the repository root:
 
-- **Deal at $452K**: `[AUTO-APPROVED]` printed, no human prompt, loop exits
-- **Deal at $457K**: approval prompt displayed, typing `y` exits the loop with `[APPROVED]`
-- **Deal at $457K, type `n`**: `[REJECTED]` printed, loop continues, seller makes another counter-offer next round
-- **Counter-offers**: no approval prompt at any price — checkpoints only fire on `ACCEPT`
-- Threshold is a single constant — changing `AUTO_APPROVE_CEILING` to `460_000` moves the goalpost
+```bash
+python -m pytest -q tests/test_ex06_human_in_the_loop.py
+```
+
+These tests run the real ADK Runner and session service with scripted buyer and
+seller agents. They check persisted state across separate chat turns, threshold
+boundaries, rejection, ambiguous input, duplicate replies, restart, and exhaustion.
 
 ## Reflection
 
-You've implemented a **three-tier governance model**: auto-approve (low-stakes), human checkpoint (high-stakes), hard block (Exercise 1's budget cap). In production, these tiers are everywhere:
-
-- **What would you use instead of `input()` in a production system?** Think: Slack approval workflows, email confirmations, dashboard buttons, webhook callbacks. How would you make the agent *wait* for an async human response?
-- **What happens if the human never responds?** Your current implementation blocks forever. How would you add a timeout — and what should the *default* action be on timeout? (Auto-approve? Auto-reject? Escalate to a manager?)
-- **Could an adversarial agent bypass this checkpoint?** The checkpoint reads `state['seller_decision']`. What if the seller writes a different state key? How would you make the checkpoint tamper-proof?
-
----
-
-> **Solution:** see `solution/ex06_human_in_the_loop/` for the complete, runnable orchestrator. The instructor will walk through it live during the review session.
+- How would you resume negotiation after rejection while preserving a total
+  round limit and passing the rejection back to the seller?
+- How would you bind approvals to proposal IDs if multiple proposals or browser
+  tabs could be active concurrently? This exercise assumes one pending proposal
+  and sequential chat requests per session.
+- Where would you enforce authorization, expiry, and idempotency before adding a
+  real external deal-finalization operation?
+- The acceptance budget is enforced in code. How would you also validate the
+  buyer's offer and ensure the seller's proposed price matches that offer?
