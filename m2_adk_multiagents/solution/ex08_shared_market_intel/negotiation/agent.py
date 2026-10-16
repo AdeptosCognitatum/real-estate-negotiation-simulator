@@ -108,6 +108,12 @@ def submit_decision(action: str, price: int, tool_context: ToolContext) -> dict:
 def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
+'''
+Original code did **not** attempt to read from cache, it only wrote to it.
+We modified it to read from the cache as well.
+  Refer to: https://chatgpt.com/s/cx_6ad258511bc88191942d2dcfe8802a58
+'''
+
 # Shared helper, outside both callbacks.
 def _price_cache_key(tool, args):
     return f"{tool.name}:{json.dumps(args, sort_keys=True, separators=(',', ':'))}"

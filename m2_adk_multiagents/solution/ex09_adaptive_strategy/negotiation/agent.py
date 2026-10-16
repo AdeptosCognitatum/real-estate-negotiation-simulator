@@ -189,6 +189,10 @@ def _init_round_state(callback_context: CallbackContext):
 
 # ─── Strategy advisor (reasoning-only sub-agent) ─────────────────────────────
 
+# Value added by having a separate dedicated Strategy Advisor sub-agent?
+# Rather than baking it into the main buyer agent?
+#   Refer to: https://chatgpt.com/s/cx_6ad25f4c82608191b752375193fe2f6e
+
 strategy_advisor = LlmAgent(
     name="strategy_advisor",
     model=MODEL,
