@@ -45,3 +45,35 @@ root_agent = ParallelAgent(
     description="Gather school, comp, and inventory signals concurrently.",
     sub_agents=[schools, comps, inventory],
 )
+
+# --8<------
+# The above is just a toy example, showing fan-out, but it has no fan-in.
+# To get a proper fan-out -> fan-in, you could do as below.
+#   (refer to: https://chatgpt.com/s/cx_6ad14bd773ac8191ad8b6a1adea25359)
+
+from google.adk.agents import SequentialAgent
+
+market_signals = ParallelAgent(
+    name="market_signals",
+    description="Gather school, comp, and inventory signals concurrently.",
+    sub_agents=[schools, comps, inventory],
+)
+
+synthesizer = LlmAgent(
+    name="market_synthesizer",
+    model=MODEL,
+    instruction=(
+        "Synthesize these signals into one concise market assessment "
+        "for a prospective buyer in 78701:\n"
+        "Schools: {schools}\n"
+        "Comparable sales: {comps}\n"
+        "Inventory: {inventory}\n"
+        "Explain how the signals together affect the buyer's negotiating position."
+    ),
+    output_key="market_assessment",
+)
+
+alternate_root_agent = SequentialAgent(
+    name="market_analysis",
+    sub_agents=[market_signals, synthesizer],
+)

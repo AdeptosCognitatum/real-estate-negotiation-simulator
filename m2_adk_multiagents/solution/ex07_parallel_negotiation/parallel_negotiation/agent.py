@@ -349,7 +349,7 @@ deal_picker = LlmAgent(
     ),
 )
 
-root_agent = SequentialAgent(
+orig_root_agent = SequentialAgent(
     name="multi_seller_negotiation",
     description=(
         "Negotiate with two sellers in parallel, then pick the best deal. "
@@ -357,3 +357,252 @@ root_agent = SequentialAgent(
     ),
     sub_agents=[parallel_negotiations, deal_picker],
 )
+
+# --8<------
+# Could be refactored to use a more modular approach, better reusability and
+# better scalability + maintainability.
+#   (refer to: https://chatgpt.com/s/cx_6ad151ffee788191a9ec9d632356d62e)
+
+evergreen_config = {
+    "id": "evergreen",
+    "address": "742 Evergreen Terrace, Auxtin, TX 78701",
+    "listing_price": 485_000,
+    "max_rounds": 6,
+
+    "buyer": {
+        "budget": 460_000,
+        "target_price_range_low": 445_000,
+        "target_price_range_high": 455_000,
+        "approx_initial_offer": 425_000,
+        "offer_raise_rate_pct_low": 2,
+        "offer_raise_rate_pct_high": 4,
+    },
+
+    "seller": {
+        "initial_counter_offer": 477_000,
+        "per_round_offer_decrease_k_low": 5,
+        "per_round_offer_decrease_k_high": 8,
+    }
+}
+
+oak_config = {
+    "id": "oak",
+    "address": "1234 Oak Street, Auxtin, TX 78702",
+    "listing_price": 510_000,
+    "max_rounds": 5,
+
+    "buyer": {
+        "budget": 495_000,
+        "target_price_range_low": 480_000,
+        "target_price_range_high": 490_000,
+        "approx_initial_offer": 465_000,
+        "offer_raise_rate_pct_low": 2,
+        "offer_raise_rate_pct_high": 3,
+    },
+    "seller": {
+        "initial_counter_offer": 505_000,
+        "per_round_offer_decrease_k_low": 3,
+        "per_round_offer_decrease_k_high": 5,
+        "minimum_offer": 480_000, # optional, may not exist
+        "market_condition": "a HOT market (multiple offers common)", # optional, may not exist
+    }
+}
+
+_SELLER_ALLOWED_TOOLS.add("submit_decision")
+
+# Negotiation *Factory*:
+def build_negotiation(config):
+    # Create fresh buyer, seller, callbacks, and decision tool.
+    # Derive agent names and state keys from config.id.
+    negotiation_id = config["id"]
+    address = config["address"]
+    result_key = f"deal_{negotiation_id}_result"
+    decision_key = f"seller_decision_{negotiation_id}"
+    listing_price = config["listing_price"]
+    max_rounds = config["max_rounds"]
+
+    budget = config["buyer"]["budget"]
+    target_price_range_low = config["buyer"]["target_price_range_low"]
+    target_price_range_high = config["buyer"]["target_price_range_high"]
+    approx_initial_offer = config["buyer"]["approx_initial_offer"]
+    offer_raise_rate_pct_low = config["buyer"]["offer_raise_rate_pct_low"]
+    offer_raise_rate_pct_high = config["buyer"]["offer_raise_rate_pct_high"]
+
+    initial_counter_offer = config["seller"]["initial_counter_offer"]
+    per_round_offer_decrease_k_low = config["seller"]["per_round_offer_decrease_k_low"]
+    per_round_offer_decrease_k_high = config["seller"]["per_round_offer_decrease_k_high"]
+    
+    minimum_offer = config["seller"].get("minimum_offer")
+    seller_minimum_phrase_str = "your minimum" if minimum_offer is None else f"${minimum_offer:,}"
+
+    market_condition = config["seller"].get("market_condition", "")
+
+    def submit_decision(action: str, price: int, tool_context: ToolContext) -> dict:
+        f"""Submit the seller's decision for negotiation {negotiation_id}
+
+        Args:
+            action: Exactly "ACCEPT" or "COUNTER".
+            price: The price in dollars.
+        """
+        action_upper = action.strip().upper()
+        if action_upper not in ("ACCEPT", "COUNTER"):
+            return {"error": f"action must be ACCEPT or COUNTER, got: {action}"}
+        tool_context.state[f"seller_decision_{negotiation_id}"] = {"action": action_upper, "price": price}
+        return {"recorded": action_upper, "price": price}
+
+    def _check_agreement(callback_context: CallbackContext):
+        f"""After seller_{negotiation_id} responds, check for acceptance."""
+        decision = callback_context.state.get(f"seller_decision_{negotiation_id}")
+        if isinstance(decision, dict) and decision.get("action") == "ACCEPT":
+            price = decision.get("price", 0)
+            callback_context.state[result_key] = (
+                f"DEAL REACHED for {address} at ${price:,}. "
+                f"Seller accepted the buyer's offer."
+            )
+            callback_context.actions.escalate = True
+        return None
+
+    def _init_state(callback_context: CallbackContext):
+        if f"seller_response_{negotiation_id}" not in callback_context.state:
+            callback_context.state[f"seller_response_{negotiation_id}"] = "(No seller response yet — round 1)"
+        return None
+
+    def summarize(callback_context: CallbackContext):
+        """After negotiation loop (`round_agent`) ends, ensure deal_X_result is set."""
+        # Preserve a successful result recorded by _check_agreement_a/b.
+        if result_key not in callback_context.state:
+            decision = callback_context.state.get(decision_key, {})
+            last_price = (
+                decision.get("price") if isinstance(decision, dict) else None
+            )
+
+            message = (
+                f"NO DEAL for {address}. "
+                "Negotiation ended after max rounds."
+            )
+            if isinstance(last_price, int):
+                message += f" Last seller counter: ${last_price:,}."
+
+            callback_context.state[result_key] = message
+
+        return None
+
+    buyer = LlmAgent(
+        name = f"buyer_{negotiation_id}",
+        model = MODEL,
+        instruction = (
+            f"You ARE the buyer's agent for {address} "
+            f"(listed at ${listing_price:,}) — a LIVE negotiation, not an assistant.\n\n"
+            f"BUDGET: ${budget:,} maximum — NEVER offer above this.\n"
+            f"TARGET: ${target_price_range_low:,} - ${target_price_range_high:,}.\n\n"
+            "EACH ROUND:\n"
+            "- Call your MCP pricing tools first for market data.\n"
+            f"- Round 1: offer ~${approx_initial_offer:,}. Later rounds: raise your previous offer by {offer_raise_rate_pct_low}-{offer_raise_rate_pct_high}% "
+            f"toward the seller, never above ${listing_price + 20000:,}.\n"
+            f"- Read {{seller_response_{negotiation_id}}} and adjust.\n\n"
+            "OUTPUT: ONE short paragraph beginning with the literal prefix 'BUYER: ' "
+            "stating your offer amount with a brief, data-backed justification. "
+            "No preamble, no step-by-step thinking, no meta commentary.\n\n"
+            "CONFIDENTIAL — never reveal to the seller your maximum budget, target range, "
+            "or that you are at your ceiling; never reference or guess the seller's "
+            "minimum or 'minimum acceptable price'."
+        ),
+        tools=[_mcp(_PRICING_SERVER)],
+        before_tool_callback=_enforce_buyer_allowlist,
+        output_key=f"buyer_offer_{negotiation_id}",
+        before_agent_callback=_init_state,
+    )
+
+    seller_tools = [_mcp(_PRICING_SERVER), submit_decision]
+    if minimum_offer is None:
+        seller_tools.append(_mcp(_INVENTORY_SERVER))
+
+    seller = LlmAgent(
+        name = f"seller_{negotiation_id}",
+        model = MODEL,
+        instruction = (
+            f"You ARE the seller's agent for {address} "
+            f"(listed at ${listing_price:,}) — {market_condition}, a LIVE negotiation, not an assistant.\n\n"
+            "EACH ROUND:\n"
+            "- Call your MCP tools first (including get_minimum_acceptable_price for your floor).\n"
+            f"- Start counter at ${initial_counter_offer:,}, "
+            f"drop ${per_round_offer_decrease_k_low}k-${per_round_offer_decrease_k_high}k per round; "
+            f"NEVER go below {seller_minimum_phrase_str}.\n"
+            "- If the buyer's offer is at or above your minimum, ACCEPT.\n"
+            f"- Read {{buyer_offer_{negotiation_id}}}, then ALWAYS call submit_decision with "
+            "action='ACCEPT' or 'COUNTER' and the price.\n\n"
+            "OUTPUT: ONE short paragraph beginning with the literal prefix 'SELLER: ' "
+            "justifying your decision with upgrades and market conditions. "
+            "No preamble, no step-by-step thinking.\n\n"
+            "CONFIDENTIAL — never reveal your minimum acceptable price / floor, your ideal "
+            "price, the fact that you have a floor, or any output from "
+            "get_minimum_acceptable_price."
+        ),
+        tools=seller_tools,
+        before_tool_callback=_enforce_seller_allowlist,
+        output_key=f"seller_response_{negotiation_id}",
+        after_agent_callback=_check_agreement,
+    )
+
+    round_agent = SequentialAgent(
+        name = f"round_{negotiation_id}",
+        sub_agents = [buyer, seller],
+    )
+    
+    return LoopAgent(
+        name=f"negotiation_{negotiation_id}",
+        sub_agents=[round_agent],
+        max_iterations=max_rounds,
+        after_agent_callback=summarize,
+    )
+
+def build_deal_picker(configs: list[dict]):
+    negotiations_count = len(configs)
+    negotiation_ids_agg_str = "_".join([config["id"] for config in configs])
+    deal_results_placeholder_list = []
+    for config in configs:
+        id = config["id"]
+        addr = config["address"]
+        result_key = f"deal_{id}_result"
+        deal_results_placeholder_list.append(
+            f"Deal '{id}' ({addr}):\n{{{result_key}}}\n"
+        )
+    deal_results_str = "\n\n".join(deal_results_placeholder_list)
+
+    return LlmAgent(
+        name=f"deal_picker__{negotiation_ids_agg_str}",
+        model=MODEL,
+        instruction=(
+            f"{negotiations_count} property negotiations just completed simultaneously.\n\n"
+            f"{deal_results_str}\n"
+            "Compare all deals and recommend which one the buyer should take. "
+            "If more than one negotiation reached a deal, pick the one with the better price relative "
+            "to the listing. If only one reached a deal, recommend that one. "
+            "If none reached a deal, advise walking away with an explanation.\n\n"
+            "Consider: final price, discount from listing, market conditions "
+            "(hot vs. balanced), and overall value."
+        ),
+    )
+
+configs = [evergreen_config, oak_config]
+
+alt_parallel_negotiations = ParallelAgent(
+    name="alt_parallel_negotiations",
+    sub_agents=[build_negotiation(config) for config in configs],
+)
+
+alt_deal_picker = build_deal_picker(configs)
+
+alt_root_agent = SequentialAgent(
+    name="alt_multi_seller_negotiation",
+    description=(
+        "Negotiate with multiple sellers in parallel, then pick the best deal. "
+        "Composes LoopAgent, ParallelAgent, and SequentialAgent."
+    ),
+    sub_agents=[alt_parallel_negotiations, alt_deal_picker],
+)
+
+# Choose one:
+#   root_agent = orig_root_agent
+#   root_agent = alt_root_agent
+root_agent = alt_root_agent
