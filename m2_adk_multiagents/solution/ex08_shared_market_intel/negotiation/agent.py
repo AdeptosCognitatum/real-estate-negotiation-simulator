@@ -32,6 +32,7 @@ To demo:
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 from google.adk.agents import LlmAgent, LoopAgent, SequentialAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -107,6 +108,16 @@ def submit_decision(action: str, price: int, tool_context: ToolContext) -> dict:
 def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
+# Shared helper, outside both callbacks.
+def _price_cache_key(tool, args):
+    return f"{tool.name}:{json.dumps(args, sort_keys=True, separators=(',', ':'))}"
+
+def _read_price_cache(tool, args, tool_context):
+    if tool.name not in _PRICING_TOOLS:
+        return None
+    cache_key = _price_cache_key(tool, args)
+    price_cache = dict(tool_context.state.get("app:price_cache", {}))
+    return price_cache.get(cache_key, None)
 
 def _cache_price_lookup(
     tool: BaseTool, args: dict, tool_context: ToolContext, tool_response
@@ -120,11 +131,14 @@ def _cache_price_lookup(
         return None
 
     # Build cache key from the tool name + arguments
+    '''
     cache_key = f"{tool.name}"
     if isinstance(args, dict):
         # Use property_id if available, else use all args
         prop_id = args.get("property_id", args.get("address", "unknown"))
         cache_key = f"{tool.name}:{prop_id}"
+    '''
+    cache_key = _price_cache_key(tool, args)
 
     # Read existing cache
     price_cache = dict(tool_context.state.get("app:price_cache", {}))
@@ -226,7 +240,7 @@ buyer = LlmAgent(
             )
         ),
     ],
-    before_tool_callback=_enforce_buyer_allowlist,
+    before_tool_callback=[_enforce_buyer_allowlist, _read_price_cache],
     after_tool_callback=_cache_price_lookup,
     output_key="buyer_offer",
     before_agent_callback=_init_round_state,
@@ -277,7 +291,7 @@ seller = LlmAgent(
         ),
         submit_decision,
     ],
-    before_tool_callback=_enforce_seller_allowlist,
+    before_tool_callback=[_enforce_seller_allowlist, _read_price_cache],
     after_tool_callback=_cache_price_lookup,
     output_key="seller_response",
     after_agent_callback=_check_agreement,
